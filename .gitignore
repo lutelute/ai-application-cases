@@ -1,0 +1,11 @@
+# Obsidian
+.obsidian/workspace*
+.obsidian/graph.json
+.obsidian/cache/
+
+# macOS
+.DS_Store
+
+# Temporary files
+*.tmp
+*~
