@@ -1,5 +1,6 @@
 ---
 title: "AIエージェントによるプロジェクト初期構築支援"
+summary: "AIエージェントとの対話を通じ、プロジェクトのセットアップからバージョン管理までを自動化する。"
 category: "開発プロセス自動化"
 industry: "IT・ソフトウェア"
 createdAt: "2025-07-19"
@@ -7,13 +8,13 @@ updatedAt: "2025-07-19"
 status: "完了"
 github_link: "https://github.com/lutelute/ai-application-cases"
 contributors:
-  - SGNB
+  - "SGNB"
 tags:
-  - AI
-  - ユースケース
-  - LLM
-  - 開発自動化
-  - Gemini
+  - "AI"
+  - "ユースケース"
+  - "LLM"
+  - "開発自動化"
+  - "Gemini"
 ---
 
 # AIエージェントによるプロジェクト初期構築支援

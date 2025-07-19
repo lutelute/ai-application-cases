@@ -1,14 +1,17 @@
 ---
 title: "{{title}}"
+summary: ""
 category: ""
 industry: ""
 createdAt: "{{date}}"
 updatedAt: "{{date}}"
 status: "検討中"
 github_link: ""
+contributors:
+  - ""
 tags:
-  - AI
-  - ユースケース
+  - "AI"
+  - "ユースケース"
 ---
 
 # {{title}}
