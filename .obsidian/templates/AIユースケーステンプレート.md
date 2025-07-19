@@ -1,3 +1,16 @@
+---
+title: "{{title}}"
+category: ""
+industry: ""
+createdAt: "{{date}}"
+updatedAt: "{{date}}"
+status: "検討中"
+github_link: ""
+tags:
+  - AI
+  - ユースケース
+---
+
 # {{title}}
 
 ## 基本情報
@@ -6,6 +19,7 @@
 - **作成日**: {{date}}
 - **更新日**: 
 - **ステータス**: 検討中/実装中/完了
+- **GitHub**: 
 
 ## 概要
 <!-- AIユースケースの簡潔な説明 -->
