@@ -350,20 +350,12 @@ class MultiStageAnalyzer:
             if not self.openai_api_key:
                 raise ValueError("OpenAI API key is required for ChatGPT")
             
-            if not HAS_REQUESTS:
-                raise ValueError("requests library is required for ChatGPT API")
-            
             # プロンプト長をチェック（概算）
             prompt_length = len(prompt.split())
             if prompt_length > 8000:  # 安全マージンを考慮
                 print(f"⚠️ プロンプトが長すぎます ({prompt_length} words). 短縮します...")
                 # プロンプトを短縮
                 prompt = prompt[:16000] + "\n\n[プロンプトが長すぎるため短縮されました]"
-            
-            headers = {
-                "Authorization": f"Bearer {self.openai_api_key}",
-                "Content-Type": "application/json"
-            }
             
             data = {
                 "model": "gpt-4o",
@@ -378,76 +370,118 @@ class MultiStageAnalyzer:
             }
             
             print(f"🔄 ChatGPT API呼び出し中...")
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                headers=headers,
-                json=data,
-                timeout=300
-            )
             
-            if response.status_code == 200:
-                try:
+            if HAS_REQUESTS:
+                # requests を使用
+                import requests
+                headers = {
+                    "Authorization": f"Bearer {self.openai_api_key}",
+                    "Content-Type": "application/json"
+                }
+                
+                response = requests.post(
+                    "https://api.openai.com/v1/chat/completions",
+                    headers=headers,
+                    json=data,
+                    timeout=300
+                )
+                
+                status_code = response.status_code
+                response_text = response.text
+                
+                if status_code == 200:
                     result_data = response.json()
-                    if 'choices' in result_data and len(result_data['choices']) > 0:
+                else:
+                    result_data = None
+                    
+            else:
+                # 標準ライブラリ urllib を使用
+                import urllib.request
+                import urllib.error
+                import json
+                
+                json_data = json.dumps(data).encode('utf-8')
+                
+                req = urllib.request.Request(
+                    "https://api.openai.com/v1/chat/completions",
+                    data=json_data,
+                    headers={
+                        "Authorization": f"Bearer {self.openai_api_key}",
+                        "Content-Type": "application/json"
+                    }
+                )
+                
+                try:
+                    with urllib.request.urlopen(req, timeout=300) as response:
+                        status_code = response.getcode()
+                        response_text = response.read().decode('utf-8')
+                        result_data = json.loads(response_text) if status_code == 200 else None
+                except urllib.error.HTTPError as e:
+                    status_code = e.code
+                    response_text = e.read().decode('utf-8')
+                    result_data = None
+                except urllib.error.URLError as e:
+                    raise Exception(f"Network error: {e}")
+            
+            # 共通のレスポンス処理
+            class MockResult:
+                def __init__(self, stdout, stderr="", returncode=0):
+                    self.stdout = stdout
+                    self.stderr = stderr
+                    self.returncode = returncode
+            
+            if status_code == 200:
+                try:
+                    if result_data and 'choices' in result_data and len(result_data['choices']) > 0:
                         content = result_data['choices'][0]['message']['content']
                         print(f"✅ ChatGPT API呼び出し成功")
-                        
-                        # subprocess.run結果と同じ形式にラップ
-                        class MockResult:
-                            def __init__(self, stdout, stderr="", returncode=0):
-                                self.stdout = stdout
-                                self.stderr = stderr
-                                self.returncode = returncode
-                        
                         return MockResult(content)
                     else:
                         error_msg = "ChatGPT API response has no choices"
                         print(f"❌ {error_msg}")
                         return MockResult("", error_msg, 1)
                         
-                except json.JSONDecodeError as e:
-                    error_msg = f"ChatGPT API JSON decode error: {e}"
+                except (KeyError, IndexError) as e:
+                    error_msg = f"ChatGPT API response format error: {e}"
                     print(f"❌ {error_msg}")
                     return MockResult("", error_msg, 1)
                     
-            elif response.status_code == 401:
+            elif status_code == 401:
                 error_msg = "ChatGPT API authentication failed. Please check your API key."
                 print(f"❌ {error_msg}")
                 return MockResult("", error_msg, 1)
                 
-            elif response.status_code == 429:
+            elif status_code == 429:
                 error_msg = "ChatGPT API rate limit exceeded. Please wait and try again."
                 print(f"❌ {error_msg}")
                 return MockResult("", error_msg, 1)
                 
-            elif response.status_code == 400:
+            elif status_code == 400:
                 try:
-                    error_data = response.json()
+                    import json
+                    error_data = json.loads(response_text)
                     error_detail = error_data.get('error', {}).get('message', 'Unknown error')
                     error_msg = f"ChatGPT API bad request: {error_detail}"
                 except:
-                    error_msg = f"ChatGPT API bad request: {response.text}"
+                    error_msg = f"ChatGPT API bad request: {response_text}"
                 print(f"❌ {error_msg}")
                 return MockResult("", error_msg, 1)
                 
             else:
-                error_msg = f"ChatGPT API error: {response.status_code} - {response.text}"
+                error_msg = f"ChatGPT API error: {status_code} - {response_text}"
                 print(f"❌ {error_msg}")
                 return MockResult("", error_msg, 1)
                 
-        except requests.exceptions.Timeout:
-            error_msg = "ChatGPT API timeout. Please try again."
-            print(f"❌ {error_msg}")
-            return MockResult("", error_msg, 1)
-            
-        except requests.exceptions.ConnectionError:
-            error_msg = "ChatGPT API connection error. Please check your internet connection."
-            print(f"❌ {error_msg}")
-            return MockResult("", error_msg, 1)
-            
         except Exception as e:
             error_msg = f"ChatGPT API unexpected error: {str(e)}"
             print(f"❌ {error_msg}")
+            
+            class MockResult:
+                def __init__(self, stdout, stderr="", returncode=0):
+                    self.stdout = stdout
+                    self.stderr = stderr
+                    self.returncode = returncode
+            
             return MockResult("", error_msg, 1)
     
     def stage_1_basic_analysis(self):
