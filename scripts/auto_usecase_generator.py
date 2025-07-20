@@ -353,6 +353,13 @@ class MultiStageAnalyzer:
             if not HAS_REQUESTS:
                 raise ValueError("requests library is required for ChatGPT API")
             
+            # プロンプト長をチェック（概算）
+            prompt_length = len(prompt.split())
+            if prompt_length > 8000:  # 安全マージンを考慮
+                print(f"⚠️ プロンプトが長すぎます ({prompt_length} words). 短縮します...")
+                # プロンプトを短縮
+                prompt = prompt[:16000] + "\n\n[プロンプトが長すぎるため短縮されました]"
+            
             headers = {
                 "Authorization": f"Bearer {self.openai_api_key}",
                 "Content-Type": "application/json"
@@ -370,6 +377,7 @@ class MultiStageAnalyzer:
                 "temperature": 0.7
             }
             
+            print(f"🔄 ChatGPT API呼び出し中...")
             response = requests.post(
                 "https://api.openai.com/v1/chat/completions",
                 headers=headers,
@@ -378,23 +386,69 @@ class MultiStageAnalyzer:
             )
             
             if response.status_code == 200:
-                result_data = response.json()
-                content = result_data['choices'][0]['message']['content']
-                
-                # subprocess.run結果と同じ形式にラップ
-                class MockResult:
-                    def __init__(self, stdout, stderr="", returncode=0):
-                        self.stdout = stdout
-                        self.stderr = stderr
-                        self.returncode = returncode
-                
-                return MockResult(content)
-            else:
-                error_msg = f"ChatGPT API error: {response.status_code} - {response.text}"
+                try:
+                    result_data = response.json()
+                    if 'choices' in result_data and len(result_data['choices']) > 0:
+                        content = result_data['choices'][0]['message']['content']
+                        print(f"✅ ChatGPT API呼び出し成功")
+                        
+                        # subprocess.run結果と同じ形式にラップ
+                        class MockResult:
+                            def __init__(self, stdout, stderr="", returncode=0):
+                                self.stdout = stdout
+                                self.stderr = stderr
+                                self.returncode = returncode
+                        
+                        return MockResult(content)
+                    else:
+                        error_msg = "ChatGPT API response has no choices"
+                        print(f"❌ {error_msg}")
+                        return MockResult("", error_msg, 1)
+                        
+                except json.JSONDecodeError as e:
+                    error_msg = f"ChatGPT API JSON decode error: {e}"
+                    print(f"❌ {error_msg}")
+                    return MockResult("", error_msg, 1)
+                    
+            elif response.status_code == 401:
+                error_msg = "ChatGPT API authentication failed. Please check your API key."
+                print(f"❌ {error_msg}")
                 return MockResult("", error_msg, 1)
                 
+            elif response.status_code == 429:
+                error_msg = "ChatGPT API rate limit exceeded. Please wait and try again."
+                print(f"❌ {error_msg}")
+                return MockResult("", error_msg, 1)
+                
+            elif response.status_code == 400:
+                try:
+                    error_data = response.json()
+                    error_detail = error_data.get('error', {}).get('message', 'Unknown error')
+                    error_msg = f"ChatGPT API bad request: {error_detail}"
+                except:
+                    error_msg = f"ChatGPT API bad request: {response.text}"
+                print(f"❌ {error_msg}")
+                return MockResult("", error_msg, 1)
+                
+            else:
+                error_msg = f"ChatGPT API error: {response.status_code} - {response.text}"
+                print(f"❌ {error_msg}")
+                return MockResult("", error_msg, 1)
+                
+        except requests.exceptions.Timeout:
+            error_msg = "ChatGPT API timeout. Please try again."
+            print(f"❌ {error_msg}")
+            return MockResult("", error_msg, 1)
+            
+        except requests.exceptions.ConnectionError:
+            error_msg = "ChatGPT API connection error. Please check your internet connection."
+            print(f"❌ {error_msg}")
+            return MockResult("", error_msg, 1)
+            
         except Exception as e:
-            return MockResult("", str(e), 1)
+            error_msg = f"ChatGPT API unexpected error: {str(e)}"
+            print(f"❌ {error_msg}")
+            return MockResult("", error_msg, 1)
     
     def stage_1_basic_analysis(self):
         """Stage 1: 基本情報収集"""
@@ -848,6 +902,12 @@ tags:
   - "[主要技術タグ2]"
   - "[主要技術タグ3]"
 ---
+
+<!-- 
+AI自動生成ドキュメント
+生成後にユーザーが内容を確認し、必要に応じて手動で編集・整理することを推奨します。
+特にプロジェクト固有の詳細情報や最新の開発状況については、適宜更新してください。
+-->
 ```
 
 2. **高品質なMarkdown構造**：
@@ -855,12 +915,14 @@ tags:
 - 技術的詳細の具体性
 - 実用的価値の明確化
 - 読みやすく構造化された文章
+- **注意**: 生成後のユーザーによる編集・整理を前提とした構造
 
 3. **品質基準**：
 - 分析データを活用した具体的な内容
 - 技術的正確性の重視
 - AIエラーメッセージや不要な情報は含めない
 - プロフェッショナルで読みやすい文章
+- **ユーザー編集対応**: 後で手動編集しやすい明確な構造
 
 4. **禁止事項**：
 - エラーメッセージの混入
@@ -1158,7 +1220,7 @@ class UseCaseGenerator:
     def get_chatgpt_api_key(self, save_option=True):
         """ChatGPT APIキーを取得（暗号化保存可能）"""
         # まず保存されたキーを確認
-        if self.api_manager.has_stored_keys():
+        if os.path.exists(self.api_manager.key_file):
             try:
                 password = getpass.getpass("保存されたAPIキーを復号化するためのパスワードを入力してください: ")
                 api_key = self.api_manager.load_api_key("openai", password)
@@ -1169,6 +1231,9 @@ class UseCaseGenerator:
                     print("❌ パスワードが間違っているか、APIキーが保存されていません")
             except KeyboardInterrupt:
                 print("\n🔄 新しいAPIキーの入力に切り替えます")
+            except Exception as e:
+                print(f"⚠️ 保存されたAPIキーの読み込みに失敗: {e}")
+                print("🔄 新しいAPIキーの入力に切り替えます")
         
         # 新しいAPIキーを入力
         print("\n🔑 ChatGPT API設定")
@@ -1203,6 +1268,17 @@ class UseCaseGenerator:
             print("\n⚠️ 暗号化保存機能を使用するには 'pip install cryptography' が必要です")
         
         return api_key
+    
+    def _load_sample_usecase_for_generator(self):
+        """UseCaseGenerator用の参考ユースケースを読み込み"""
+        try:
+            sample_path = os.path.join(self.project_root, "use-cases", "AIエージェントによるプロジェクト初期構築支援.md")
+            if os.path.exists(sample_path):
+                with open(sample_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except:
+            pass
+        return ""
     
     def call_ai_cli(self, github_url, repo_name, ai_config):
         """AI CLIを呼び出してユースケース分析を実行"""
@@ -1251,7 +1327,7 @@ class UseCaseGenerator:
                     print(f"⏱️  予想時間: 1-3分")
                     
                     # 良いサンプルを読み込み
-                    sample_usecase = self._load_reference_usecase()
+                    sample_usecase = self._load_sample_usecase_for_generator()
                     
                     # 改善された高速分析プロンプト
                     prompt = f"""
@@ -1280,6 +1356,12 @@ tags:
   - "[主要技術タグ2]"
   - "[主要技術タグ3]"
 ---
+
+<!-- 
+AI自動生成ドキュメント
+生成後にユーザーが内容を確認し、必要に応じて手動で編集・整理することを推奨します。
+特にプロジェクト固有の詳細情報や最新の開発状況については、適宜更新してください。
+-->
 ```
 
 2. **高品質なMarkdown構造**：
@@ -1287,6 +1369,7 @@ tags:
 - 技術的詳細の具体性
 - 実用的価値の明確化
 - 読みやすく構造化された文章
+- **注意**: 生成後のユーザーによる編集・整理を前提とした構造
 
 ## 必須セクション
 - # プロジェクトタイトル
