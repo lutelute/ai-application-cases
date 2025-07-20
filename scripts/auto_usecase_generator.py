@@ -46,7 +46,17 @@ class ProgressBar:
 def extract_clean_output(raw_output):
     """AIの出力から主要なコンテンツ（JSONやMarkdown）を抽出・整形する"""
     
-    # 1. ```json ... ``` ブロックを検索
+    # 1. YAMLフロントマター付きのMarkdown全体を検索（最優先）
+    md_search = re.search(r"^---\s*\n.*?\n---\s*\n.*", raw_output, re.DOTALL)
+    if md_search:
+        return md_search.group(0)
+
+    # 2. ```markdown ... ``` ブロックを検索
+    md_block_search = re.search(r"```markdown\s*(.*?)\s*```", raw_output, re.DOTALL)
+    if md_block_search:
+        return md_block_search.group(1)
+
+    # 3. ```json ... ``` ブロックを検索
     json_search = re.search(r"```(json)?\s*(\{.*?\})\s*```", raw_output, re.DOTALL)
     if json_search:
         try:
@@ -55,17 +65,7 @@ def extract_clean_output(raw_output):
         except json.JSONDecodeError:
             pass
 
-    # 2. YAMLフロントマター付きのMarkdown全体を検索
-    md_search = re.search(r"^---\s*\n.*?\n---\s*\n.*", raw_output, re.DOTALL)
-    if md_search:
-        return md_search.group(0)
-
-    # 3. ```markdown ... ``` ブロックを検索
-    md_block_search = re.search(r"```markdown\s*(.*?)\s*```", raw_output, re.DOTALL)
-    if md_block_search:
-        return md_block_search.group(1)
-
-    # 4. JSONオブジェクトを直接検索（最後の手段）
+    # 4. JSONオブジェクトを直接検索
     json_start = raw_output.find('{')
     json_end = raw_output.rfind('}') + 1
     if json_start != -1 and json_end > json_start:
@@ -81,7 +81,6 @@ def extract_clean_output(raw_output):
 
 
 class MultiStageAnalyzer:
-
     """高精度多段階分析エンジン（Gemini/Claude対応）"""
     
     def __init__(self, github_url, repo_name, temp_dir, cli_outputs_dir, ai_provider="gemini"):
@@ -144,9 +143,10 @@ class MultiStageAnalyzer:
             stop_progress.set()
             progress_thread.join(timeout=0.5)
             
-            # CLIの生出力を保存
+            # CLIの生出力をログファイルに保存
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            raw_output_filename = f"{timestamp}_{self.repo_name}_{stage_name.replace(':', '_')}.log"
+            safe_stage_name = re.sub(r'[^\w\-_]', '_', stage_name)
+            raw_output_filename = f"{timestamp}_{self.repo_name}_{safe_stage_name}.log"
             raw_output_path = os.path.join(self.cli_outputs_dir, raw_output_filename)
             
             log_content = f"""# AI Analysis Log
@@ -189,85 +189,52 @@ class MultiStageAnalyzer:
         except subprocess.TimeoutExpired:
             stop_progress.set()
             progress.finish(f"{stage_name} タイムアウト")
+            print(f"⏰ {self.ai_provider.upper()} {stage_name} がタイムアウトしました")
             return None
         except Exception as e:
-            print(f"❌ {stage_name} エラー: {str(e)}")
+            stop_progress.set()
+            progress.finish(f"{stage_name} エラー")
+            print(f"❌ {self.ai_provider.upper()} {stage_name} でエラーが発生しました: {e}")
             return None
     
     def stage_1_basic_analysis(self):
         """Stage 1: 基本情報収集"""
         prompt = f"""
-GitHubリポジトリの基本情報を収集・分析してください。
+あなたはAIユースケース分析の専門家です。
+GitHubリポジトリ {self.github_url} の基本情報を詳細に調査してください。
 
-📂 対象リポジトリ: {self.github_url}
+## 調査項目：
+1. リポジトリの目的・概要
+2. 主要技術スタック（言語、フレームワーク、ライブラリ）
+3. ファイル構造の分析
+4. README、ドキュメントの内容
+5. コントリビューター情報
+6. ライセンス情報
 
-## Stage 1: 基本情報収集タスク
-
-以下の情報を詳細に調査・分析してください：
-
-### 1. リポジトリ基本情報
-- プロジェクト名、説明、目的
-- 主要言語とフレームワーク
-- ライセンス、作成日、最終更新日
-- コントリビューター情報
-- スター数、フォーク数、Issue数
-
-### 2. プロジェクト構造分析
-- ディレクトリ構造の詳細把握
-- 主要ファイルとその役割
-- 設定ファイル（package.json, requirements.txt等）
-- ドキュメント構造（README, docs等）
-
-### 3. 技術スタック特定
-- 使用言語とバージョン
-- 依存ライブラリ・フレームワーク
-- 開発ツール・ビルドシステム
-- デプロイ方法
-
-### 4. AI/ML技術の予備調査
-- 機械学習関連ライブラリの使用
-- AI API（OpenAI、Google AI等）の利用
-- データ処理・分析ツール
-- モデル学習・推論コード
-
-## 出力形式
-以下のJSON形式で結果を出力してください：
+## 回答形式：
+以下のJSON形式で厳密に回答してください：
 
 ```json
 {{
-  "basic_info": {{
-    "name": "プロジェクト名",
-    "description": "詳細な説明",
-    "purpose": "主な目的",
-    "language": "主要言語",
-    "license": "ライセンス",
-    "created": "作成日",
-    "updated": "最終更新日",
-    "contributors": ["contributor1", "contributor2"],
-    "stats": {{
-      "stars": 0,
-      "forks": 0,
-      "issues": 0
-    }}
-  }},
-  "structure": {{
-    "directories": ["dir1", "dir2"],
-    "key_files": ["file1", "file2"],
-    "config_files": ["config1", "config2"],
-    "docs": ["README.md", "docs/"]
-  }},
+  "repository_name": "リポジトリ名",
+  "description": "リポジトリの説明",
+  "main_purpose": "主な目的",
   "tech_stack": {{
-    "languages": ["Python", "JavaScript"],
-    "frameworks": ["React", "Flask"],
-    "dependencies": ["numpy", "pandas"],
-    "tools": ["webpack", "pytest"]
+    "languages": ["言語1", "言語2"],
+    "frameworks": ["フレームワーク1", "フレームワーク2"],
+    "libraries": ["ライブラリ1", "ライブラリ2"]
   }},
-  "ai_ml_indicators": {{
-    "ml_libraries": ["tensorflow", "scikit-learn"],
-    "ai_apis": ["openai", "google-ai"],
-    "data_tools": ["pandas", "numpy"],
-    "model_files": ["model.pkl", "weights.h5"]
-  }}
+  "file_structure": {{
+    "key_directories": ["ディレクトリ1", "ディレクトリ2"],
+    "important_files": ["ファイル1", "ファイル2"]
+  }},
+  "documentation": {{
+    "has_readme": true/false,
+    "readme_quality": "良好/普通/不十分",
+    "other_docs": ["ドキュメント1", "ドキュメント2"]
+  }},
+  "contributors": ["コントリビューター1", "コントリビューター2"],
+  "license": "ライセンス名"
 }}
 ```
 
@@ -290,64 +257,57 @@ GitHubリポジトリの基本情報を収集・分析してください。
         """Stage 2: 詳細コード分析"""
         stage1_data = self.load_stage_data("1_basic")
         
+        if not stage1_data:
+            print("⚠️ Stage 1データが利用できません。Stage 2をスキップします。")
+            return None
+        
         prompt = f"""
-GitHubリポジトリの詳細コード分析を実行してください。
+リポジトリ {self.github_url} のコードを詳細に分析してください。
 
-📂 対象リポジトリ: {self.github_url}
+## Stage 1で得られた基本情報：
+{json.dumps(stage1_data, ensure_ascii=False, indent=2)}
 
-## Stage 2: 詳細コード分析タスク
+## 詳細分析項目：
+1. コードの品質・構造分析
+2. アーキテクチャパターンの特定
+3. 設計原則の適用状況
+4. テストカバレッジと品質
+5. セキュリティ上の考慮事項
+6. パフォーマンス特性
+7. 拡張性・保守性の評価
 
-Stage 1で収集した基本情報：
-{json.dumps(stage1_data, ensure_ascii=False, indent=2) if stage1_data else "Stage 1データなし"}
-
-### 詳細分析項目：
-
-1. **コアロジック分析**
-   - 主要アルゴリズムの実装方法
-   - データフロー・処理フロー
-   - 設計パターンの使用状況
-
-2. **AI/ML機能の詳細調査**
-   - モデル学習・推論コード
-   - データ前処理・後処理
-   - パフォーマンス最適化手法
-
-3. **アーキテクチャ分析**
-   - システム全体の構成
-   - モジュール間の依存関係
-   - API設計・インターフェース
-
-4. **品質・保守性評価**
-   - コード品質（可読性、保守性）
-   - テストカバレッジ
-   - エラーハンドリング
-
-## 出力形式（JSON）：
+## 回答形式：
+以下のJSON形式で厳密に回答してください：
 
 ```json
 {{
-  "core_logic": {{
-    "main_algorithms": ["algorithm1", "algorithm2"],
-    "data_flow": "データの流れの説明",
-    "design_patterns": ["pattern1", "pattern2"]
-  }},
-  "ai_ml_details": {{
-    "model_types": ["CNN", "transformer"],
-    "training_process": "学習プロセスの説明",
-    "inference_method": "推論方法の説明",
-    "data_preprocessing": "前処理の詳細",
-    "performance_optimization": "最適化手法"
+  "code_quality": {{
+    "overall_rating": "優秀/良好/普通/改善必要",
+    "code_style": "一貫性の評価",
+    "documentation": "コメント・ドキュメントの評価"
   }},
   "architecture": {{
-    "system_design": "システム設計の説明",
-    "module_dependencies": {{"module1": ["dep1", "dep2"]}},
-    "api_design": "API設計の詳細"
+    "pattern": "アーキテクチャパターン名",
+    "design_principles": ["原則1", "原則2"],
+    "modularity": "モジュール性の評価"
   }},
-  "quality_assessment": {{
-    "code_quality": "品質評価",
-    "test_coverage": "テストカバレッジ",
-    "error_handling": "エラーハンドリング評価",
-    "maintainability": "保守性評価"
+  "testing": {{
+    "has_tests": true/false,
+    "test_coverage": "カバレッジ推定",
+    "test_quality": "テスト品質評価"
+  }},
+  "security": {{
+    "security_practices": ["実践1", "実践2"],
+    "potential_risks": ["リスク1", "リスク2"]
+  }},
+  "performance": {{
+    "optimization_level": "最適化レベル",
+    "bottlenecks": ["ボトルネック1", "ボトルネック2"]
+  }},
+  "maintainability": {{
+    "code_complexity": "複雑度評価",
+    "extensibility": "拡張性評価",
+    "refactoring_needs": ["改善点1", "改善点2"]
   }}
 }}
 ```
@@ -371,58 +331,55 @@ Stage 1で収集した基本情報：
         stage1_data = self.load_stage_data("1_basic")
         stage2_data = self.load_stage_data("2_deep_analysis")
         
+        if not stage1_data or not stage2_data:
+            print("⚠️ 前段階のデータが不足しています。Stage 3をスキップします。")
+            return None
+        
         prompt = f"""
 これまでの分析結果の整合性をチェックし、不足情報を補完してください。
 
-📂 対象リポジトリ: {self.github_url}
+## Stage 1 基本情報：
+{json.dumps(stage1_data, ensure_ascii=False, indent=2)}
 
-## Stage 3: 整合性チェック・補完タスク
+## Stage 2 詳細分析：
+{json.dumps(stage2_data, ensure_ascii=False, indent=2)}
 
-### これまでの分析結果：
+## チェック・補完項目：
+1. 情報の整合性確認
+2. 不足している技術的詳細の補完
+3. AI/ML技術の使用状況の特定
+4. ビジネス価値・実用性の評価
+5. 競合優位性の分析
+6. 改善提案の具体化
 
-**Stage 1 基本情報：**
-{json.dumps(stage1_data, ensure_ascii=False, indent=2) if stage1_data else "データなし"}
-
-**Stage 2 詳細分析：**
-{json.dumps(stage2_data, ensure_ascii=False, indent=2) if stage2_data else "データなし"}
-
-### チェック・補完項目：
-
-1. **データ整合性チェック**
-   - Stage 1とStage 2の情報に矛盾がないか
-   - 技術スタックと実装の整合性
-   - 依存関係の正確性
-
-2. **不足情報の特定・補完**
-   - 見落とした重要な機能
-   - 追加の技術要素
-   - 重要なファイル・設定
-
-3. **AI/MLユースケースの再評価**
-   - AI技術の活用度合い
-   - 実用性・革新性の評価
-   - 技術的難易度の判定
-
-## 出力形式（JSON）：
+## 回答形式：
+以下のJSON形式で厳密に回答してください：
 
 ```json
 {{
   "consistency_check": {{
-    "inconsistencies": ["矛盾点1", "矛盾点2"],
-    "verified_facts": ["確認済み事実1", "確認済み事実2"],
-    "confidence_score": 0.85
+    "data_consistency": "整合性評価",
+    "contradictions": ["矛盾点1", "矛盾点2"],
+    "missing_info": ["不足情報1", "不足情報2"]
   }},
-  "補完情報": {{
-    "additional_features": ["機能1", "機能2"],
-    "missing_tech_stack": ["技術1", "技術2"],
-    "important_files": ["ファイル1", "ファイル2"]
+  "ai_ml_usage": {{
+    "uses_ai_ml": true/false,
+    "ai_technologies": ["技術1", "技術2"],
+    "ml_frameworks": ["フレームワーク1", "フレームワーク2"],
+    "ai_applications": ["用途1", "用途2"]
   }},
-  "ai_usecase_assessment": {{
-    "ai_integration_level": "high/medium/low",
-    "innovation_score": 0.8,
-    "technical_complexity": "high/medium/low",
-    "practical_value": "high/medium/low"
-  }}
+  "business_value": {{
+    "target_users": ["ユーザー1", "ユーザー2"],
+    "business_problems": ["課題1", "課題2"],
+    "value_proposition": "価値提案",
+    "market_potential": "市場ポテンシャル"
+  }},
+  "competitive_advantage": {{
+    "unique_features": ["特徴1", "特徴2"],
+    "differentiation": "差別化要因",
+    "innovation_level": "革新性レベル"
+  }},
+  "improvement_suggestions": ["改善案1", "改善案2"]
 }}
 ```
 
@@ -446,72 +403,74 @@ Stage 1で収集した基本情報：
         stage2_data = self.load_stage_data("2_deep_analysis")
         stage3_data = self.load_stage_data("3_consistency")
         
+        if not all([stage1_data, stage2_data, stage3_data]):
+            print("⚠️ 前段階のデータが不足しています。Stage 4をスキップします。")
+            return None
+        
         prompt = f"""
-プロジェクトのディープ分析と洞察を提供してください。
+これまでの全分析結果を統合し、深い洞察と戦略的視点を提供してください。
 
-📂 対象リポジトリ: {self.github_url}
+## 統合データ：
+### Stage 1 基本情報：
+{json.dumps(stage1_data, ensure_ascii=False, indent=2)}
 
-## 累積分析データ：
+### Stage 2 詳細分析：
+{json.dumps(stage2_data, ensure_ascii=False, indent=2)}
 
-**Stage 1 基本情報：**
-{json.dumps(stage1_data, ensure_ascii=False, indent=2) if stage1_data else "データなし"}
+### Stage 3 整合性・補完：
+{json.dumps(stage3_data, ensure_ascii=False, indent=2)}
 
-**Stage 2 詳細分析：**
-{json.dumps(stage2_data, ensure_ascii=False, indent=2) if stage2_data else "データなし"}
+## 深い洞察項目：
+1. 技術的革新性と将来性
+2. 実装の複雑さと実現可能性
+3. スケーラビリティとパフォーマンス予測
+4. リスク分析と対策
+5. 投資対効果と ROI 予測
+6. 他分野への応用可能性
+7. 業界トレンドとの整合性
 
-**Stage 3 整合性チェック：**
-{json.dumps(stage3_data, ensure_ascii=False, indent=2) if stage3_data else "データなし"}
-
-## Stage 4: ディープ分析・洞察タスク
-
-### 深層分析項目：
-
-1. **課題・問題点の特定**
-   - 技術的制約・ボトルネック
-   - 設計上の問題
-   - 実装の改善点
-
-2. **ユースケース価値の深掘り**
-   - 市場での位置づけ
-   - 競合との差別化要因
-   - 実世界での応用可能性
-
-3. **将来展望・拡張性**
-   - 技術進化への対応
-   - スケーラビリティ
-   - 新機能追加の可能性
-
-4. **学習・教育価値**
-   - 技術学習の参考価値
-   - ベストプラクティス
-   - アンチパターンの事例
-
-## 出力形式（JSON）：
+## 回答形式：
+以下のJSON形式で厳密に回答してください：
 
 ```json
 {{
-  "challenges_and_issues": {{
-    "technical_constraints": ["制約1", "制約2"],
-    "design_problems": ["問題1", "問題2"],
-    "improvement_areas": ["改善点1", "改善点2"]
+  "innovation_analysis": {{
+    "innovation_level": "革新レベル（1-10）",
+    "future_potential": "将来性評価",
+    "technology_maturity": "技術成熟度",
+    "adoption_barriers": ["導入障壁1", "導入障壁2"]
   }},
-  "usecase_value": {{
-    "market_position": "市場での位置づけ",
-    "differentiation": ["差別化要因1", "差別化要因2"],
-    "real_world_applications": ["応用例1", "応用例2"],
-    "target_users": ["ユーザー層1", "ユーザー層2"]
+  "implementation_complexity": {{
+    "complexity_rating": "複雑度（1-10）",
+    "development_time": "開発期間予測",
+    "required_expertise": ["必要専門知識1", "必要専門知識2"],
+    "infrastructure_needs": ["インフラ要件1", "インフラ要件2"]
   }},
-  "future_prospects": {{
-    "scalability": "スケーラビリティ評価",
-    "extensibility": "拡張性評価",
-    "tech_evolution_readiness": "技術進化への対応度",
-    "potential_features": ["将来機能1", "将来機能2"]
+  "scalability_performance": {{
+    "scalability_potential": "スケーラビリティポテンシャル",
+    "performance_bottlenecks": ["ボトルネック1", "ボトルネック2"],
+    "optimization_opportunities": ["最適化機会1", "最適化機会2"]
   }},
-  "educational_value": {{
-    "learning_value": "学習価値の説明",
-    "best_practices": ["ベストプラクティス1", "ベストプラクティス2"],
-    "anti_patterns": ["アンチパターン1", "アンチパターン2"],
-    "skill_level_required": "必要スキルレベル"
+  "risk_analysis": {{
+    "technical_risks": ["技術リスク1", "技術リスク2"],
+    "business_risks": ["ビジネスリスク1", "ビジネスリスク2"],
+    "mitigation_strategies": ["対策1", "対策2"]
+  }},
+  "roi_analysis": {{
+    "investment_level": "投資レベル",
+    "expected_returns": "期待収益",
+    "payback_period": "投資回収期間",
+    "cost_benefit_ratio": "コストベネフィット比"
+  }},
+  "application_potential": {{
+    "other_industries": ["適用可能業界1", "適用可能業界2"],
+    "extension_possibilities": ["拡張可能性1", "拡張可能性2"],
+    "ecosystem_impact": "エコシステムへの影響"
+  }},
+  "industry_alignment": {{
+    "current_trends": ["トレンド1", "トレンド2"],
+    "market_timing": "市場タイミング評価",
+    "competitive_landscape": "競合状況"
   }}
 }}
 ```
@@ -533,31 +492,36 @@ Stage 1で収集した基本情報：
     def stage_5_final_synthesis(self):
         """Stage 5: 最終統合・MDドキュメント生成"""
         # 全段階のデータを読み込み
-        all_data = {}
-        for stage in ["1_basic", "2_deep_analysis", "3_consistency", "4_deep_insights"]:
-            data = self.load_stage_data(stage)
-            if data:
-                all_data[stage] = data
+        stage1_data = self.load_stage_data("1_basic")
+        stage2_data = self.load_stage_data("2_deep_analysis")
+        stage3_data = self.load_stage_data("3_consistency")
+        stage4_data = self.load_stage_data("4_deep_insights")
         
         prompt = f"""
-全ての分析結果を統合し、高品質なAIユースケースMarkdownドキュメントを生成してください。
+あなたはAIユースケースドキュメント作成の専門家です。
+これまでの全分析結果を統合し、高品質なMarkdownドキュメントを生成してください。
 
-📂 対象リポジトリ: {self.github_url}
+## 利用可能な分析データ：
+### Stage 1 基本情報：
+{json.dumps(stage1_data, ensure_ascii=False, indent=2) if stage1_data else "データなし"}
 
-## 全分析データ統合：
+### Stage 2 詳細分析：
+{json.dumps(stage2_data, ensure_ascii=False, indent=2) if stage2_data else "データなし"}
 
-{json.dumps(all_data, ensure_ascii=False, indent=2)}
+### Stage 3 整合性・補完：
+{json.dumps(stage3_data, ensure_ascii=False, indent=2) if stage3_data else "データなし"}
 
-## Stage 5: 最終統合・ドキュメント生成
+### Stage 4 深い洞察：
+{json.dumps(stage4_data, ensure_ascii=False, indent=2) if stage4_data else "データなし"}
 
-### 要求仕様：
+## 必須要件：
 
-1. **YAMLフロントマター（必須）**
+1. **YAMLフロントマター**（厳密にこの形式を使用）：
 ```yaml
 ---
-title: "[簡潔で魅力的なタイトル]"
-summary: "[1-2文の的確な概要]"
-category: "[開発プロセス自動化/データ分析/画像処理/自然言語処理/機械学習/ウェブ開発/その他]"
+title: "[具体的なプロジェクトタイトル]"
+summary: "[1-2文の簡潔な概要]"
+category: "[AIユースケース/Web開発/データ分析/モバイルアプリ/その他]"
 industry: "[IT・ソフトウェア/製造業/金融/ヘルスケア/教育/エンタメ/その他]"
 createdAt: "{datetime.now().strftime('%Y-%m-%d')}"
 updatedAt: "{datetime.now().strftime('%Y-%m-%d')}"
@@ -571,7 +535,7 @@ tags:
 ---
 ```
 
-2. **Markdownドキュメント構造**
+2. **Markdownドキュメント構造**：
 - # プロジェクトタイトル
 - ## 概要
 - ## 課題・ニーズ
@@ -590,6 +554,8 @@ tags:
 - 技術的正確性と読みやすさの両立
 - AIユースケースとしての価値を明確に表現
 - 具体的で実用的な情報を含む
+- CLIの生ログや冗長な分析プロセスは含めない
+- 簡潔で読みやすい最終成果物として作成
 
 完全なMarkdownドキュメントを生成してください。
         """
@@ -597,11 +563,7 @@ tags:
         result = self.execute_ai_analysis(prompt, "Stage 5: 最終統合")
         if result:
             self.save_stage_data("5_final_output", {"markdown": result})
-            # 最終出力に詳細ログへの参照を追加
-            final_md = result
-            log_dir = os.path.relpath(self.cli_outputs_dir, self.project_root)
-            final_md += f"\n\n---\n*This document was generated by an AI assistant. For detailed analysis logs, see the `{log_dir}` directory.*"
-            return final_md
+            return result
         return None
     
     def execute_full_analysis(self):
@@ -664,166 +626,123 @@ class UseCaseGenerator:
             # GitHub CLIの認証状態確認
             result = subprocess.run(["gh", "auth", "status"], 
                                   capture_output=True, text=True)
-            if result.returncode == 0:
-                print("✅ GitHub CLI認証済み")
-                return True
-            else:
-                print("⚠️ GitHub CLI未認証")
-                return False
+            return result.returncode == 0
         except FileNotFoundError:
-            print("⚠️ GitHub CLIが見つかりません")
-            return False
-        except Exception:
             return False
     
     def check_repo_accessibility(self, owner, repo):
         """リポジトリのアクセス可能性をチェック"""
-        try:
-            # GitHub API でリポジトリ情報を取得
-            api_url = f"https://api.github.com/repos/{owner}/{repo}"
-            
-            if HAS_REQUESTS:
-                # requestsを使用
-                response = requests.get(api_url, timeout=10)
-                status_code = response.status_code
-                if status_code == 200:
-                    repo_data = response.json()
-                    return True, "public", repo_data
-            else:
-                # 標準ライブラリを使用
-                try:
-                    with urllib.request.urlopen(api_url, timeout=10) as response:
-                        if response.status == 200:
-                            repo_data = json.loads(response.read().decode())
-                            return True, "public", repo_data
-                        status_code = response.status
-                except urllib.error.HTTPError as e:
-                    status_code = e.code
-                except urllib.error.URLError:
-                    print("⚠️ ネットワーク接続エラー")
-                    return False, "network_error", None
-            
-            if status_code == 404:
-                # 404の場合、プライベートリポジトリの可能性
-                print("🔒 プライベートリポジトリが検出されました")
+        
+        if HAS_REQUESTS:
+            try:
+                # GitHub API経由でリポジトリ情報を取得
+                url = f"https://api.github.com/repos/{owner}/{repo}"
+                response = requests.get(url, timeout=10)
                 
-                # GitHub CLI で認証済みの場合は再試行
-                if self.check_github_auth():
-                    try:
-                        # gh api を使用して認証付きでアクセス
-                        result = subprocess.run(
-                            ["gh", "api", f"repos/{owner}/{repo}"],
-                            capture_output=True, text=True, timeout=10
-                        )
-                        if result.returncode == 0:
-                            repo_data = json.loads(result.stdout)
+                if response.status_code == 200:
+                    repo_data = response.json()
+                    if repo_data.get("private", False):
+                        return True, "private", repo_data
+                    else:
+                        return True, "public", repo_data
+                elif response.status_code == 404:
+                    # プライベートリポジトリまたは存在しないリポジトリ
+                    return False, "private_or_not_found", None
+                else:
+                    return False, "no_access", None
+                    
+            except requests.RequestException:
+                return False, "network_error", None
+        else:
+            # urllib.requestを使用したフォールバック
+            try:
+                import urllib.request
+                import urllib.error
+                
+                url = f"https://api.github.com/repos/{owner}/{repo}"
+                req = urllib.request.Request(url)
+                
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    if response.status == 200:
+                        import json
+                        repo_data = json.loads(response.read().decode())
+                        if repo_data.get("private", False):
                             return True, "private", repo_data
                         else:
-                            return False, "no_access", None
-                    except Exception:
-                        return False, "no_access", None
+                            return True, "public", repo_data
+                            
+            except urllib.error.HTTPError as e:
+                if e.code == 404:
+                    return False, "private_or_not_found", None
                 else:
-                    return False, "private_no_auth", None
-            else:
-                return False, "error", None
-                
-        except Exception as e:
-            print(f"⚠️ API確認エラー: {str(e)}")
-            return False, "error", None
+                    return False, "no_access", None
+            except Exception:
+                return False, "network_error", None
+        
+        return False, "unknown_error", None
     
     def handle_private_repo_access(self, owner, repo):
-        """プライベートリポジトリのアクセス問題を処理"""
-        print("\n" + "="*60)
-        print("🔒 プライベートリポジトリアクセスの問題")
-        print("="*60)
+        """プライベートリポジトリのアクセス処理"""
+        print(f"\n🔒 プライベートリポジトリ '{owner}/{repo}' が検出されました")
         
-        print(f"\nリポジトリ '{owner}/{repo}' はプライベートです。")
-        print("AIが分析するためには、以下のいずれかの方法が必要です：")
-        
-        print("\n📋 解決方法:")
-        print("1. 【推奨】リポジトリを一時的にPublicにする")
-        print("2. GitHub CLIで認証する")
-        print("3. アクセス可能なPublicリポジトリを使用する")
-        
-        print("\n" + "-"*50)
-        print("1️⃣ リポジトリをPublicにする方法:")
-        print("-"*50)
-        print("1. GitHubでリポジトリページを開く")
-        print(f"   → https://github.com/{owner}/{repo}")
-        print("2. [Settings] タブをクリック")
-        print("3. 下部の [Danger Zone] まで移動")
-        print("4. [Change visibility] → [Change to public] を選択")
-        print("5. 確認メッセージに従って変更")
-        print("💡 分析後に再度Privateに戻すことができます")
-        
-        print("\n" + "-"*50)
-        print("2️⃣ GitHub CLI認証する方法:")
-        print("-"*50)
-        print("1. GitHub CLIをインストール:")
-        print("   • macOS: brew install gh")
-        print("   • Windows: winget install --id GitHub.cli")
-        print("2. 認証を実行:")
-        print("   gh auth login")
-        print("3. ブラウザで認証手順に従う")
-        
-        print("\n" + "-"*50)
-        print("3️⃣ 他の選択肢:")
-        print("-"*50)
-        print("• PublicなサンプルリポジトリのURLを使用")
-        print("• フォークしてPublicリポジトリとして公開")
-        
-        # ユーザーの選択を求める
-        print("\n" + "="*60)
-        while True:
-            choice = input("どのように進めますか？ [1: Public化完了/2: 認証完了/3: 別URL/q: 終了]: ").strip().lower()
+        # GitHub CLI認証状態確認
+        if not self.check_github_auth():
+            print("\n⚠️ GitHub CLI認証が必要です")
+            print("以下のコマンドで認証してください:")
+            print("  gh auth login")
             
-            if choice == "1":
-                print("\n🔄 リポジトリがPublicになったか確認中...")
-                accessible, repo_type, repo_data = self.check_repo_accessibility(owner, repo)
-                if accessible and repo_type == "public":
-                    print("✅ リポジトリがPublicになりました！")
+            choice = input("\n今すぐ認証しますか？ [Y/n]: ").strip().lower()
+            if choice in ['', 'y', 'yes']:
+                try:
+                    subprocess.run(["gh", "auth", "login"], check=True)
+                    print("✅ 認証が完了しました")
                     return True
-                else:
-                    print("❌ まだPrivateです。Public化を完了してから再試行してください。")
-                    continue
-                    
-            elif choice == "2":
-                print("\n🔄 GitHub CLI認証状態を確認中...")
-                if self.check_github_auth():
-                    accessible, repo_type, repo_data = self.check_repo_accessibility(owner, repo)
-                    if accessible:
-                        print("✅ 認証済みでアクセス可能です！")
-                        return True
-                    else:
-                        print("❌ 認証はされていますが、リポジトリにアクセスできません。")
-                        print("💡 リポジトリの所有者でない場合は、アクセス権限が必要です。")
-                        continue
-                else:
-                    print("❌ まだ認証されていません。'gh auth login' を実行してから再試行してください。")
-                    continue
-                    
-            elif choice == "3":
-                return False  # 新しいURLの入力に戻る
-                
-            elif choice == "q":
-                print("🚪 処理を終了します。")
-                sys.exit(0)
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    print("❌ 認証に失敗しました")
+                    return False
             else:
-                print("❌ 無効な選択です。1, 2, 3, または q を入力してください。")
+                print("📌 別の方法:")
+                print("1. リポジトリをPublicに変更する")
+                print("2. アクセス権限のあるアカウントで認証する")
+                return False
+        else:
+            print("✅ GitHub CLI認証済み - プライベートリポジトリにアクセス可能です")
+            return True
     
-    def validate_github_url(self, url):
-        """GitHubURLの妥当性チェック（アクセス可能性も含む）"""
-        parsed = urlparse(url)
-        if parsed.netloc != 'github.com':
-            return False, "GitHub URLではありません"
-        
+    def extract_repo_name(self, github_url):
+        """GitHubURLからリポジトリ名を抽出"""
+        parsed = urlparse(github_url)
         path_parts = parsed.path.strip('/').split('/')
-        if len(path_parts) < 2:
-            return False, "有効なリポジトリURLではありません"
+        if len(path_parts) >= 2:
+            return f"{path_parts[0]}_{path_parts[1]}"
+        return "unknown_repo"
+    
+    def validate_github_url(self, github_url):
+        """GitHubURLの検証とアクセス可能性チェック"""
         
-        owner, repo = path_parts[0], path_parts[1]
+        # URL形式の基本チェック
+        if not github_url.startswith(('https://github.com/', 'http://github.com/', 'github.com/')):
+            return False, "有効なGitHubURLを入力してください（例: https://github.com/user/repo）"
         
-        # .git 拡張子を削除
+        # URLの正規化
+        if not github_url.startswith('http'):
+            github_url = 'https://' + github_url
+        
+        try:
+            parsed = urlparse(github_url)
+            path_parts = parsed.path.strip('/').split('/')
+            
+            if len(path_parts) < 2:
+                return False, "URLにユーザー名とリポジトリ名が含まれていません"
+            
+            owner, repo = path_parts[0], path_parts[1]
+            
+            # .git拡張子を削除
+            if repo.endswith('.git'):
+                repo = repo[:-4]
+        except Exception:
+            return False, "URLの解析に失敗しました"
+        
         if repo.endswith('.git'):
             repo = repo[:-4]
         
@@ -839,7 +758,7 @@ class UseCaseGenerator:
                 print(f"✅ Privateリポジトリ: 認証済みでアクセス可能")
             return True, f"{owner}/{repo}"
         else:
-            if repo_type == "private_no_auth":
+            if repo_type == "private_or_not_found":
                 # プライベートリポジトリのアクセス問題を処理
                 if self.handle_private_repo_access(owner, repo):
                     return True, f"{owner}/{repo}"
@@ -893,7 +812,7 @@ class UseCaseGenerator:
                             print(preview)
                             print("-" * 50)
                             print(f"📊 総文字数: {len(result):,} 文字")
-                            print(f"💾 分析データ保存: 一時ディレクトリ")
+                            print(f"💾 分析ログ保存: {os.path.relpath(self.cli_outputs_dir, self.project_root)}")
                             
                             return result
                         else:
@@ -936,6 +855,7 @@ tags:
 ```
 
 {repo_name} リポジトリの効率的な分析を実行し、高品質なユースケースドキュメントを生成してください。
+CLIの生ログや分析プロセスは含めず、簡潔で読みやすい最終成果物として作成してください。
                     """
                     
                     # プログレスバー開始
@@ -990,142 +910,74 @@ tags:
                         return output
                     else:
                         progress.finish(f"{provider.upper()}高速分析失敗")
-                        print(f"\n❌ {provider.upper()}実行エラー:")
-                        print(f"終了コード: {result.returncode}")
-                        if result.stderr:
-                            print(f"エラー内容:\n{result.stderr}")
-                        if result.stdout:
-                            print(f"出力内容:\n{result.stdout}")
-                        
+                        print(f"❌ {provider.upper()}エラー: {result.stderr}")
                         if ai_provider != "auto":
                             return None
                         continue
-                    
+                
             except subprocess.TimeoutExpired:
-                print(f"\n⏰ {provider.upper()}実行がタイムアウトしました")
+                print(f"⏰ {provider.upper()}がタイムアウトしました")
                 if ai_provider != "auto":
                     return None
-                print(f"🔄 次のプロバイダーを試行します...")
-                continue
-            except FileNotFoundError:
-                print(f"\n⚠️ {provider.upper()} CLIが見つかりません")
-                print(f"インストール方法:")
-                if provider == "claude":
-                    print("- Claude CLI: https://github.com/anthropics/claude-code")
-                else:
-                    print("- Gemini CLI: npm install -g @google/generative-ai-cli")
-                    
-                if ai_provider != "auto":
-                    return None
-                print(f"🔄 次のプロバイダーを試行します...")
                 continue
             except Exception as e:
-                print(f"\n❌ {provider.upper()}で予期しないエラー: {str(e)}")
+                print(f"❌ {provider.upper()}でエラーが発生しました: {e}")
                 if ai_provider != "auto":
                     return None
-                print(f"🔄 次のプロバイダーを試行します...")
                 continue
         
-        print("\n❌ 利用可能なAI CLIが見つかりませんでした")
-        print("\n💡 以下のいずれかをインストールしてください:")
-        print("• Gemini CLI: npm install -g @google/generative-ai-cli")
-        print("• Claude CLI: https://github.com/anthropics/claude-code")
         return None
     
-    def extract_repo_name(self, github_url):
-        """GitHubURLからリポジトリ名を抽出"""
-        parsed = urlparse(github_url)
-        path_parts = parsed.path.strip('/').split('/')
-        return path_parts[1] if len(path_parts) >= 2 else "unknown_repo"
-    
-    def sanitize_filename(self, filename):
-        """ファイル名に使用できない文字を除去"""
-        return re.sub(r'[^\w\-_\.]', '_', filename)
-    
     def save_usecase_file(self, content, repo_name):
-        """生成されたユースケースファイルを保存"""
-        os.makedirs(self.use_cases_dir, exist_ok=True)
-        
-        filename = f"{self.sanitize_filename(repo_name)}.md"
-        filepath = os.path.join(self.use_cases_dir, filename)
-        
+        """ユースケースファイルを保存"""
         try:
+            # use-casesディレクトリが存在しない場合は作成
+            os.makedirs(self.use_cases_dir, exist_ok=True)
+            
+            # ファイル名作成（安全な文字のみ使用）
+            safe_repo_name = re.sub(r'[^\w\-_]', '_', repo_name)
+            filename = f"{safe_repo_name}.md"
+            filepath = os.path.join(self.use_cases_dir, filename)
+            
+            # ファイル保存
             with open(filepath, 'w', encoding='utf-8') as f:
                 f.write(content)
-            print(f"✅ ユースケースファイル保存: {filepath}")
+            
             return filepath
+            
         except Exception as e:
-            print(f"❌ ファイル保存エラー: {str(e)}")
+            print(f"❌ ファイル保存エラー: {e}")
             return None
     
     def auto_git_operations(self, filepath, repo_name):
-        """Git add, commit, push を自動実行"""
+        """Git操作の自動実行"""
         try:
-            os.chdir(self.project_root)
+            self.print_step(4, 5, "Git操作")
             
-            print(f"\n[4/5] Git操作を実行中")
-            print("-" * 40)
+            # Git add
+            print("📝 ファイルをステージングエリアに追加中...")
+            subprocess.run(["git", "add", filepath], check=True, cwd=self.project_root)
             
-            # git status確認
-            print("📊 Git状態確認中...")
-            status_result = subprocess.run(["git", "status", "--porcelain"], 
-                                         capture_output=True, text=True)
-            if status_result.stdout.strip():
-                print(f"変更ファイル数: {len(status_result.stdout.strip().split())}")
+            # Git commit
+            commit_message = f"feat: Add use case for {repo_name}\n\n🤖 Generated with [Claude Code](https://claude.ai/code)\n\nCo-Authored-By: Claude <noreply@anthropic.com>"
+            print("💾 変更をコミット中...")
             
-            # git add
-            print("📁 ファイルをステージング中...")
-            add_result = subprocess.run(["git", "add", filepath], 
-                                      capture_output=True, text=True)
-            if add_result.returncode != 0:
-                print(f"⚠️ git add警告: {add_result.stderr}")
-                return False
+            subprocess.run([
+                "git", "commit", "-m", commit_message
+            ], check=True, cwd=self.project_root)
             
-            print("✅ ファイルステージング完了")
+            # Git push
+            print("🚀 リモートリポジトリにプッシュ中...")
+            subprocess.run(["git", "push"], check=True, cwd=self.project_root)
             
-            # commit message作成
-            commit_msg = f"""feat: Add AI use case for {repo_name}
-
-🤖 Generated with AI Use Case Generator
-
-- Repository: {repo_name}
-- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-- Auto-generated content with AI analysis
-
-Co-Authored-By: AI Assistant <noreply@ai-assistant.com>"""
-            
-            # git commit
-            print("💾 コミット作成中...")
-            commit_result = subprocess.run(["git", "commit", "-m", commit_msg], 
-                                         capture_output=True, text=True)
-            if commit_result.returncode == 0:
-                print("✅ コミット完了")
-                commit_hash = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
-                                           capture_output=True, text=True).stdout.strip()
-                print(f"📝 コミットハッシュ: {commit_hash}")
-            else:
-                print(f"⚠️ git commit警告: {commit_result.stderr}")
-                if "nothing to commit" in commit_result.stdout:
-                    print("💡 コミットする変更がありません")
-                    return True
-                return False
-            
-            # git push
-            print("🚀 リモートにプッシュ中...")
-            push_result = subprocess.run(["git", "push"], 
-                                       capture_output=True, text=True)
-            if push_result.returncode == 0:
-                print("✅ プッシュ完了")
-                print("🌐 リモートリポジトリに反映されました")
-            else:
-                print(f"⚠️ git push警告: {push_result.stderr}")
-                print("💡 手動でプッシュが必要かもしれません: git push")
-                return True  # commitは成功したのでTrueを返す
-                
+            print("✅ Git操作が正常に完了しました")
             return True
             
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Git操作エラー: {e}")
+            return False
         except Exception as e:
-            print(f"❌ Git操作エラー: {str(e)}")
+            print(f"❌ 予期しないエラー: {e}")
             return False
     
     def generate_usecase(self, github_url, ai_config, auto_git=True):
@@ -1180,6 +1032,44 @@ Co-Authored-By: AI Assistant <noreply@ai-assistant.com>"""
         print("\n" + "=" * 60)
         return True
 
+def run_tests():
+    """基本的なテスト関数"""
+    print("\n--- Running basic tests ---")
+    
+    # Test case 1: Pure JSON output
+    json_output = '{"key": "value", "number": 123}'
+    test_input_1 = f"Some text before.\n```json\n{json_output}\n```\nSome text after."
+    expected_output_1 = json_output
+    assert extract_clean_output(test_input_1) == expected_output_1, f"Test 1 failed: {extract_clean_output(test_input_1)}"
+    print("✅ Test 1 (JSON in code block) passed.")
+    
+    # Test case 2: Pure Markdown output
+    md_output = "# Title\n\n- Item 1\n- Item 2"
+    test_input_2 = f"```markdown\n{md_output}\n```"
+    expected_output_2 = md_output
+    assert extract_clean_output(test_input_2) == expected_output_2, f"Test 2 failed: {extract_clean_output(test_input_2)}"
+    print("✅ Test 2 (Markdown in code block) passed.")
+    
+    # Test case 3: YAML front matter Markdown
+    yaml_md_output = "---\ntitle: \"Test\"\n---\n# Content\nThis is content."
+    test_input_3 = f"Some preamble.\n{yaml_md_output}\nSome postamble."
+    expected_output_3 = yaml_md_output
+    assert extract_clean_output(test_input_3) == expected_output_3, f"Test 3 failed: {extract_clean_output(test_input_3)}"
+    print("✅ Test 3 (YAML front matter Markdown) passed.")
+    
+    # Test case 4: Mixed content, should prioritize YAML front matter
+    mixed_output = f"Some text.\n{yaml_md_output}\n```json\n{json_output}\n```"
+    expected_output_4 = yaml_md_output
+    assert extract_clean_output(mixed_output) == expected_output_4, f"Test 4 failed: {extract_clean_output(mixed_output)}"
+    print("✅ Test 4 (Mixed content - YAML front matter priority) passed.")
+    
+    # Test case 5: No code blocks, just plain text
+    plain_text_output = "This is just plain text with no special blocks."
+    assert extract_clean_output(plain_text_output) == plain_text_output, f"Test 5 failed: {extract_clean_output(plain_text_output)}"
+    print("✅ Test 5 (Plain text) passed.")
+    
+    print("--- All basic tests passed! ---")
+
 def main():
     parser = argparse.ArgumentParser(description='GitHubリポジトリからAIユースケースを自動生成')
     parser.add_argument('github_url', nargs='?', help='GitHubリポジトリURL')
@@ -1190,8 +1080,14 @@ def main():
                        help='分析精度モード (default: high)')
     parser.add_argument('--no-git', action='store_true', 
                        help='Git操作をスキップ（ファイル生成のみ）')
+    parser.add_argument('--test', action='store_true',
+                       help='Run basic tests and exit')
     
     args = parser.parse_args()
+    
+    if args.test:
+        run_tests()
+        sys.exit(0)
     
     # インタラクティブモード
     if not args.github_url:
@@ -1271,4 +1167,5 @@ def main():
         print("- Gemini CLI: npm install -g @google/generative-ai-cli")
         sys.exit(1)
 
-def run_tests():    print("\n--- Running basic tests ---")    # Test case 1: Pure JSON output    json_output = '{\"key\": \"value\", \"number\": 123}'    test_input_1 = f"Some text before.\n```json\n{json_output}\n```\nSome text after."    expected_output_1 = json_output    assert extract_clean_output(test_input_1) == expected_output_1, f"Test 1 failed: {extract_clean_output(test_input_1)}"    print("✅ Test 1 (JSON in code block) passed.")    # Test case 2: Pure Markdown output    md_output = "# Title\n\n- Item 1\n- Item 2"    test_input_2 = f"```markdown\n{md_output}\n```"    expected_output_2 = md_output    assert extract_clean_output(test_input_2) == expected_output_2, f"Test 2 failed: {extract_clean_output(test_input_2)}"    print("✅ Test 2 (Markdown in code block) passed.")    # Test case 3: YAML front matter Markdown    yaml_md_output = "---\ntitle: \"Test\"\n---\n# Content\nThis is content."    test_input_3 = f"Some preamble.\n{yaml_md_output}\nSome postamble."    expected_output_3 = yaml_md_output    assert extract_clean_output(test_input_3) == expected_output_3, f"Test 3 failed: {extract_clean_output(test_input_3)}"    print("✅ Test 3 (YAML front matter Markdown) passed.")    # Test case 4: Mixed content, should prioritize JSON    mixed_output = f"Some text.\n```json\n{json_output}\n```\n```markdown\n{md_output}\n```"    expected_output_4 = json_output    assert extract_clean_output(mixed_output) == expected_output_4, f"Test 4 failed: {extract_clean_output(mixed_output)}"    print("✅ Test 4 (Mixed content - JSON priority) passed.")    # Test case 5: No code blocks, just plain text    plain_text_output = "This is just plain text with no special blocks."    assert extract_clean_output(plain_text_output) == plain_text_output, f"Test 5 failed: {extract_clean_output(plain_text_output)}"    print("✅ Test 5 (Plain text) passed.")    # Test case 6: JSON directly without code block    direct_json_output = '{\"status\": \"success\", \"data\": [1, 2, 3]}'    assert extract_clean_output(direct_json_output) == direct_json_output, f"Test 6 failed: {extract_clean_output(direct_json_output)}"    print("✅ Test 6 (Direct JSON) passed.")    print("--- All basic tests passed! ---")if __name__ == "__main__":    parser = argparse.ArgumentParser(description='GitHubリポジトリからAIユースケースを自動生成')    parser.add_argument('github_url', nargs='?', help='GitHubリポジトリURL')    parser.add_argument('--project-root', default='.', help='プロジェクトルートディレクトリ')    parser.add_argument('--ai-provider', choices=['gemini', 'claude', 'auto'], default='gemini',                        help='使用するAI CLI (default: gemini)')    parser.add_argument('--precision', choices=['fast', 'high'], default='high',                       help='分析精度モード (default: high)')    parser.add_argument('--no-git', action='store_true',                        help='Git操作をスキップ（ファイル生成のみ）')    parser.add_argument('--test', action='store_true',                        help='Run basic tests and exit')        args = parser.parse_args()    if args.test:        run_tests()        sys.exit(0)    # インタラクティブモード    if not args.github_url:        print("🚀 AI Use Case自動生成ツール")        print("=" * 50)                # URL入力ループ（プライベートリポジトリ対応）        while True:            github_url = input("GitHubリポジトリURLを入力してください: ").strip()                        if not github_url:                print("❌ URLが入力されていません")                continue                        # URL検証（アクセス可能性チェック含む）            generator = UseCaseGenerator(args.project_root)            is_valid, result = generator.validate_github_url(github_url)                        if is_valid:                break            elif result == "新しいURLを入力してください":                print("\n🔄 新しいURLを入力してください。")                continue            else:                print(f"❌ {result}")                retry = input("別のURLを試しますか？ [Y/n]: ").strip().lower()                if retry not in ['', 'y', 'yes']:                    sys.exit(1)                continue                    # AI Provider & 精度選択        print("\n🤖 AI分析オプション選択:")        print("1. Gemini 高精度（多段階分析・10-15分）")        print("2. Gemini 高速（単発分析・1-3分）")        print("3. Claude 高精度（多段階分析・10-15分）")        print("4. Claude 高速（単発分析・1-3分）")        print("5. 自動選択（高精度）")                choice = input("選択してください [1-5, default: 1]: ").strip()                ai_config_map = {            "1": {"provider": "gemini", "precision": "high"},            "2": {"provider": "gemini", "precision": "fast"},            "3": {"provider": "claude", "precision": "high"},            "4": {"provider": "claude", "precision": "fast"},            "5": {"provider": "auto", "precision": "high"},            "": {"provider": "gemini", "precision": "high"}        }        ai_config = ai_config_map.get(choice, {"provider": "gemini", "precision": "high"})                # Git操作選択        git_choice = input("\nGit操作を自動実行しますか？ [Y/n]: ").strip().lower()        auto_git = git_choice in ['', 'y', 'yes']    else:        github_url = args.github_url        ai_config = {"provider": args.ai_provider, "precision": args.precision}        auto_git = not args.no_git                # コマンドライン引数の場合もURL検証を実行        generator = UseCaseGenerator(args.project_root)        is_valid, result = generator.validate_github_url(github_url)        if not is_valid:            if result == "新しいURLを入力してください":                print("❌ プライベートリポジトリアクセスがキャンセルされました")            else:                print(f"❌ URL検証エラー: {result}")            sys.exit(1)        # ジェネレーター初期化・実行    generator = UseCaseGenerator(args.project_root)        if generator.generate_usecase(github_url, ai_config, auto_git):        sys.exit(0)    else:        print("\n💡 ヒント:")        print("- Claude CLI: https://github.com/anthropics/claude-code")        print("- Gemini CLI: npm install -g @google/generative-ai-cli")        sys.exit(1)
+if __name__ == "__main__":
+    main()
