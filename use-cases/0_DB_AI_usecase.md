@@ -30,6 +30,7 @@ columns:
       task_hide_completed: true
       footer_type: none
       persist_changes: false
+      content_alignment: text-align-left
   contributors:
     input: text
     accessorKey: contributors
