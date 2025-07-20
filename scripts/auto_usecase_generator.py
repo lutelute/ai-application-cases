@@ -811,45 +811,63 @@ GitHubリポジトリ {self.github_url} を分析して、以下のJSON形式で
         stage3_data = self.load_stage_data("3_consistency")
         stage4_data = self.load_stage_data("4_deep_insights")
         
+        # 既存の良いサンプルを参考例として読み込み
+        sample_usecase = self._load_sample_usecase()
+        template = self._load_template()
+        
         prompt = f"""
-リポジトリ {self.github_url} のMarkdownドキュメントを作成してください。
+あなたはAIユースケース分析の専門家です。GitHubリポジトリを分析して、高品質なユースケースドキュメントを作成してください。
 
-以下の形式で完全なMarkdownを生成してください：
+## 分析対象
+- **リポジトリ**: {self.github_url}
+- **プロジェクト名**: {self.repo_name}
 
+## 利用可能な分析データ
+{self._format_analysis_data_for_prompt(stage1_data, stage2_data, stage3_data, stage4_data)}
+
+## 参考フォーマット（良いサンプル）
+{sample_usecase}
+
+## 必須要求事項
+
+1. **厳密なYAMLフロントマター**（以下の形式を必ず使用）：
+```yaml
 ---
-title: "{self.repo_name} プロジェクト"
-summary: "GitHubリポジトリの分析レポート"
-category: "ソフトウェア開発"
-industry: "IT・ソフトウェア"
-createdAt: "{datetime.now().strftime('%Y-%m-%d')}"
-updatedAt: "{datetime.now().strftime('%Y-%m-%d')}"
-status: "分析完了"
-github_link: "{self.github_url}"
+title: "[具体的で分かりやすいプロジェクトタイトル]"
+summary: "[1-2文の簡潔で的確な概要]"
+category: "[適切なカテゴリ：AIユースケース/Web開発/データ分析/モバイルアプリ/ツール/ライブラリ/その他]"
+industry: "[対象業界：IT・ソフトウェア/製造業/金融/ヘルスケア/教育/エンタメ/その他]"
+createdAt: {datetime.now().strftime('%Y-%m-%d')}
+updatedAt: {datetime.now().strftime('%Y-%m-%d')}
+status: "[開発中/完了/実験的/アーカイブ/メンテナンス中]"
+github_link: {self.github_url}
 contributors:
-  - "GitHub Repository Owner"
+  - "[実際のコントリビューター名]"
 tags:
-  - "GitHub"
-  - "リポジトリ分析"
+  - "[主要技術タグ1]"
+  - "[主要技術タグ2]"
+  - "[主要技術タグ3]"
 ---
+```
 
-# {self.repo_name} プロジェクト
+2. **高品質なMarkdown構造**：
+- リポジトリの実際の内容に基づいた正確な分析
+- 技術的詳細の具体性
+- 実用的価値の明確化
+- 読みやすく構造化された文章
 
-## 概要
-このプロジェクトは {self.github_url} のGitHubリポジトリです。
+3. **品質基準**：
+- 分析データを活用した具体的な内容
+- 技術的正確性の重視
+- AIエラーメッセージや不要な情報は含めない
+- プロフェッショナルで読みやすい文章
 
-## 技術スタック
-- プログラミング言語: 分析中
-- フレームワーク: 分析中
-- その他のツール: 分析中
+4. **禁止事項**：
+- エラーメッセージの混入
+- 不完全な情報での推測
+- テンプレート的な汎用表現の多用
 
-## 主要機能
-リポジトリの主要な機能や特徴について説明します。
-
-## 技術的詳細
-コードベースの技術的な詳細や実装方法について説明します。
-
-## 参考リンク
-- [GitHub Repository]({self.github_url})
+完全で高品質なMarkdownドキュメントを生成してください。
         """
         
         result = self.execute_ai_analysis(prompt, "Stage 5: 最終統合")
@@ -892,6 +910,68 @@ tags:
         print(f"🎉 {self.ai_provider.upper()}多段階分析完了！")
         
         return final_result
+    
+    def _load_sample_usecase(self):
+        """良いサンプルのユースケースを読み込み"""
+        try:
+            sample_path = os.path.join(self.project_root, "use-cases", "AIエージェントによるプロジェクト初期構築支援.md")
+            if os.path.exists(sample_path):
+                with open(sample_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except:
+            pass
+        return ""
+    
+    def _load_template(self):
+        """テンプレートファイルを読み込み"""
+        try:
+            template_path = os.path.join(os.path.dirname(self.temp_dir), "../scripts/usecase_template.md")
+            if os.path.exists(template_path):
+                with open(template_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except:
+            pass
+        return ""
+    
+    def _format_analysis_data_for_prompt(self, stage1_data, stage2_data, stage3_data, stage4_data):
+        """分析データをプロンプト用に整形"""
+        formatted = []
+        
+        if stage1_data:
+            formatted.append("### 基本情報:")
+            formatted.append(f"- リポジトリ名: {stage1_data.get('repository_name', 'Unknown')}")
+            formatted.append(f"- 説明: {stage1_data.get('description', 'Unknown')}")
+            formatted.append(f"- 目的: {stage1_data.get('main_purpose', 'Unknown')}")
+            if stage1_data.get('tech_stack'):
+                tech = stage1_data['tech_stack']
+                formatted.append(f"- 主要言語: {', '.join(tech.get('languages', []))}")
+                formatted.append(f"- フレームワーク: {', '.join(tech.get('frameworks', []))}")
+        
+        if stage3_data and stage3_data.get('ai_ml_usage'):
+            ai_usage = stage3_data['ai_ml_usage']
+            formatted.append("### AI/ML技術:")
+            formatted.append(f"- AI/ML使用: {'はい' if ai_usage.get('uses_ai_ml') else 'いいえ'}")
+            if ai_usage.get('ai_technologies'):
+                formatted.append(f"- AI技術: {', '.join(ai_usage.get('ai_technologies', []))}")
+        
+        if stage4_data and stage4_data.get('innovation_analysis'):
+            innovation = stage4_data['innovation_analysis']
+            formatted.append("### 革新性:")
+            formatted.append(f"- 革新レベル: {innovation.get('innovation_level', 'Unknown')}")
+            formatted.append(f"- 将来性: {innovation.get('future_potential', 'Unknown')}")
+        
+        return "\n".join(formatted) if formatted else "分析データが利用できません。リポジトリを直接調査して分析してください。"
+    
+    def _load_reference_usecase(self):
+        """高速分析用の参考ユースケースを読み込み"""
+        try:
+            sample_path = os.path.join(self.project_root, "use-cases", "AIエージェントによるプロジェクト初期構築支援.md")
+            if os.path.exists(sample_path):
+                with open(sample_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+        except:
+            pass
+        return ""
 
 class UseCaseGenerator:
     def __init__(self, project_root):
@@ -1170,36 +1250,59 @@ class UseCaseGenerator:
                     print(f"⚡ 高速単発分析モード")
                     print(f"⏱️  予想時間: 1-3分")
                     
-                    # 簡潔プロンプト構築
+                    # 良いサンプルを読み込み
+                    sample_usecase = self._load_reference_usecase()
+                    
+                    # 改善された高速分析プロンプト
                     prompt = f"""
-あなたはAIユースケース分析の専門家です。
-GitHubリポジトリ {github_url} を効率的に分析して、統一されたフォーマットでユースケースドキュメントを生成します。
+あなたはAIユースケース分析の専門家です。GitHubリポジトリ {github_url} を効率的に分析して、高品質なユースケースドキュメントを生成してください。
 
-## 分析要求：
-1. リポジトリの基本情報（目的、技術スタック、主要機能）
-2. AI/ML技術の使用状況を特定
-3. YAMLメタデータ付きMarkdownドキュメントを生成
+## 参考フォーマット（良い例）
+{sample_usecase}
 
-## YAMLメタデータ構造（必須）：
+## 必須要求事項
+
+1. **厳密なYAMLフロントマター**：
 ```yaml
 ---
-title: "[プロジェクトタイトル]"
-summary: "[1-2文の概要]"
-category: "[カテゴリ]"
-industry: "[業界]"
-createdAt: "{datetime.now().strftime('%Y-%m-%d')}"
-updatedAt: "{datetime.now().strftime('%Y-%m-%d')}"
-status: "[ステータス]"
-github_link: "{github_url}"
+title: "[具体的で分かりやすいプロジェクトタイトル]"
+summary: "[1-2文の簡潔で的確な概要]"
+category: "[適切なカテゴリ：AIユースケース/Web開発/データ分析/モバイルアプリ/ツール/ライブラリ/その他]"
+industry: "[対象業界：IT・ソフトウェア/製造業/金融/ヘルスケア/教育/エンタメ/その他]"
+createdAt: {datetime.now().strftime('%Y-%m-%d')}
+updatedAt: {datetime.now().strftime('%Y-%m-%d')}
+status: "[開発中/完了/実験的/アーカイブ/メンテナンス中]"
+github_link: {github_url}
 contributors:
-  - "[コントリビューター]"
+  - "[実際のコントリビューター名]"
 tags:
-  - "[技術タグ]"
+  - "[主要技術タグ1]"
+  - "[主要技術タグ2]"
+  - "[主要技術タグ3]"
 ---
 ```
 
-{repo_name} リポジトリの効率的な分析を実行し、高品質なユースケースドキュメントを生成してください。
-CLIの生ログや分析プロセスは含めず、簡潔で読みやすい最終成果物として作成してください。
+2. **高品質なMarkdown構造**：
+- リポジトリの実際の内容に基づいた正確な分析
+- 技術的詳細の具体性
+- 実用的価値の明確化
+- 読みやすく構造化された文章
+
+## 必須セクション
+- # プロジェクトタイトル
+- ## 概要
+- ## 課題・ニーズ  
+- ## AI技術（AI/ML使用時）または ## 技術スタック
+- ## 実装フロー
+- ## 主要機能
+- ## 技術的詳細
+- ## 期待される効果
+- ## リスク・課題
+- ## 応用・展開可能性
+- ## コントリビューター
+- ## 参考リンク
+
+完全で高品質なMarkdownドキュメントを生成してください。
                     """
                     
                     # プログレスバー開始
