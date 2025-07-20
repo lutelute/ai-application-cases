@@ -10,3 +10,15 @@
 # Temporary files
 *.tmp
 *~
+
+# API Keys and Configuration (SECURITY: Never commit these!)
+.config/
+.api_keys.enc
+*.env
+.env.local
+.env.production
+openai_api_key.txt
+api_keys/
+
+# CLI outputs
+.cli_outputs/

@@ -15,6 +15,17 @@ import shutil
 from datetime import datetime
 from urllib.parse import urlparse
 import argparse
+import base64
+import getpass
+
+# 暗号化機能（オプショナル）
+try:
+    from cryptography.fernet import Fernet
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    HAS_CRYPTOGRAPHY = True
+except ImportError:
+    HAS_CRYPTOGRAPHY = False
 
 # requestsの代替として標準ライブラリを使用
 try:
@@ -24,6 +35,93 @@ except ImportError:
     import urllib.request
     import urllib.error
     HAS_REQUESTS = False
+
+class APIKeyManager:
+    """APIキーの暗号化保存・復号化を管理"""
+    
+    def __init__(self, config_dir):
+        self.config_dir = config_dir
+        self.key_file = os.path.join(config_dir, ".api_keys.enc")
+        os.makedirs(config_dir, exist_ok=True)
+        
+    def _derive_key(self, password: str, salt: bytes) -> bytes:
+        """パスワードから暗号化キーを導出"""
+        kdf = PBKDF2HMAC(
+            algorithm=hashes.SHA256(),
+            length=32,
+            salt=salt,
+            iterations=100000,
+        )
+        return base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    
+    def save_api_key(self, service: str, api_key: str, password: str):
+        """APIキーを暗号化して保存"""
+        if not HAS_CRYPTOGRAPHY:
+            print("⚠️ 暗号化ライブラリが利用できません。'pip install cryptography' でインストールしてください")
+            return False
+        
+        try:
+            # 既存のキーファイルを読み込むか、新規作成
+            data = {}
+            salt = os.urandom(16)
+            
+            if os.path.exists(self.key_file):
+                # 既存ファイルから塩を読み込み
+                with open(self.key_file, 'rb') as f:
+                    salt = f.read(16)
+                    encrypted_data = f.read()
+                
+                # 復号化して既存データを取得
+                key = self._derive_key(password, salt)
+                fernet = Fernet(key)
+                decrypted_data = fernet.decrypt(encrypted_data)
+                data = json.loads(decrypted_data.decode())
+            
+            # 新しいAPIキーを追加
+            data[service] = api_key
+            
+            # 暗号化して保存
+            key = self._derive_key(password, salt)
+            fernet = Fernet(key)
+            encrypted_data = fernet.encrypt(json.dumps(data).encode())
+            
+            with open(self.key_file, 'wb') as f:
+                f.write(salt)
+                f.write(encrypted_data)
+            
+            print(f"✅ {service} APIキーを暗号化保存しました")
+            return True
+            
+        except Exception as e:
+            print(f"❌ APIキー保存エラー: {e}")
+            return False
+    
+    def load_api_key(self, service: str, password: str) -> str:
+        """暗号化されたAPIキーを復号化して取得"""
+        if not HAS_CRYPTOGRAPHY:
+            return None
+        
+        try:
+            if not os.path.exists(self.key_file):
+                return None
+            
+            with open(self.key_file, 'rb') as f:
+                salt = f.read(16)
+                encrypted_data = f.read()
+            
+            key = self._derive_key(password, salt)
+            fernet = Fernet(key)
+            decrypted_data = fernet.decrypt(encrypted_data)
+            data = json.loads(decrypted_data.decode())
+            
+            return data.get(service)
+            
+        except Exception:
+            return None
+    
+    def has_stored_keys(self) -> bool:
+        """保存されたAPIキーファイルが存在するか確認"""
+        return os.path.exists(self.key_file)
 
 class ProgressBar:
     """シンプルなプログレスバー表示"""
@@ -116,12 +214,13 @@ def extract_clean_output(raw_output):
 class MultiStageAnalyzer:
     """高精度多段階分析エンジン（Gemini/Claude対応）"""
     
-    def __init__(self, github_url, repo_name, temp_dir, cli_outputs_dir, ai_provider="gemini"):
+    def __init__(self, github_url, repo_name, temp_dir, cli_outputs_dir, ai_provider="gemini", openai_api_key=None):
         self.github_url = github_url
         self.repo_name = repo_name
         self.temp_dir = temp_dir
         self.cli_outputs_dir = cli_outputs_dir
         self.ai_provider = ai_provider
+        self.openai_api_key = openai_api_key
         self.analysis_data = {}
         self.project_root = os.path.dirname(cli_outputs_dir)
         
@@ -161,18 +260,27 @@ class MultiStageAnalyzer:
             if self.ai_provider == "gemini":
                 cmd = ["gemini", "chat", "--prompt", prompt]
                 timeout = 300  # 5分
+                result = subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=timeout
+                )
             elif self.ai_provider == "claude":
                 cmd = ["claude", prompt]
                 timeout = 300  # 5分
+                result = subprocess.run(
+                    cmd, 
+                    capture_output=True, 
+                    text=True, 
+                    timeout=timeout
+                )
+            elif self.ai_provider == "chatgpt":
+                # ChatGPT API呼び出し
+                result = self._call_chatgpt_api(prompt)
+                timeout = 300  # 5分
             else:
                 raise ValueError(f"Unsupported AI provider: {self.ai_provider}")
-            
-            result = subprocess.run(
-                cmd, 
-                capture_output=True, 
-                text=True, 
-                timeout=timeout
-            )
             
             stop_progress.set()
             progress_thread.join(timeout=0.5)
@@ -235,6 +343,58 @@ class MultiStageAnalyzer:
             progress.finish(f"{stage_name} エラー")
             print(f"❌ {self.ai_provider.upper()} {stage_name} でエラーが発生しました: {e}")
             return None
+    
+    def _call_chatgpt_api(self, prompt):
+        """ChatGPT APIを呼び出す"""
+        try:
+            if not self.openai_api_key:
+                raise ValueError("OpenAI API key is required for ChatGPT")
+            
+            if not HAS_REQUESTS:
+                raise ValueError("requests library is required for ChatGPT API")
+            
+            headers = {
+                "Authorization": f"Bearer {self.openai_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            data = {
+                "model": "gpt-4o",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                "max_tokens": 4000,
+                "temperature": 0.7
+            }
+            
+            response = requests.post(
+                "https://api.openai.com/v1/chat/completions",
+                headers=headers,
+                json=data,
+                timeout=300
+            )
+            
+            if response.status_code == 200:
+                result_data = response.json()
+                content = result_data['choices'][0]['message']['content']
+                
+                # subprocess.run結果と同じ形式にラップ
+                class MockResult:
+                    def __init__(self, stdout, stderr="", returncode=0):
+                        self.stdout = stdout
+                        self.stderr = stderr
+                        self.returncode = returncode
+                
+                return MockResult(content)
+            else:
+                error_msg = f"ChatGPT API error: {response.status_code} - {response.text}"
+                return MockResult("", error_msg, 1)
+                
+        except Exception as e:
+            return MockResult("", str(e), 1)
     
     def stage_1_basic_analysis(self):
         """Stage 1: 基本情報収集"""
@@ -739,6 +899,8 @@ class UseCaseGenerator:
         self.use_cases_dir = os.path.join(project_root, "use-cases")
         self.scripts_dir = os.path.join(project_root, "scripts")
         self.cli_outputs_dir = os.path.join(project_root, ".cli_outputs")
+        self.config_dir = os.path.join(project_root, ".config")
+        self.api_manager = APIKeyManager(self.config_dir)
         os.makedirs(self.cli_outputs_dir, exist_ok=True)
         
     def print_header(self):
@@ -913,11 +1075,61 @@ class UseCaseGenerator:
             print(f"⚠️ プロンプトテンプレートが見つかりません: {template_path}")
             return None
     
+    def get_chatgpt_api_key(self, save_option=True):
+        """ChatGPT APIキーを取得（暗号化保存可能）"""
+        # まず保存されたキーを確認
+        if self.api_manager.has_stored_keys():
+            try:
+                password = getpass.getpass("保存されたAPIキーを復号化するためのパスワードを入力してください: ")
+                api_key = self.api_manager.load_api_key("openai", password)
+                if api_key:
+                    print("✅ 保存されたChatGPT APIキーを読み込みました")
+                    return api_key
+                else:
+                    print("❌ パスワードが間違っているか、APIキーが保存されていません")
+            except KeyboardInterrupt:
+                print("\n🔄 新しいAPIキーの入力に切り替えます")
+        
+        # 新しいAPIキーを入力
+        print("\n🔑 ChatGPT API設定")
+        print("OpenAI APIキーは https://platform.openai.com/api-keys で取得できます")
+        
+        while True:
+            api_key = getpass.getpass("OpenAI APIキーを入力してください (sk-...): ").strip()
+            
+            if not api_key:
+                print("❌ APIキーが入力されていません")
+                continue
+            
+            if not api_key.startswith("sk-"):
+                print("❌ 無効なAPIキー形式です。正しいOpenAI APIキーを入力してください")
+                continue
+            
+            break
+        
+        # 保存オプション
+        if save_option and HAS_CRYPTOGRAPHY:
+            save = input("\nAPIキーを暗号化して保存しますか？ [Y/n]: ").strip().lower()
+            if save in ['', 'y', 'yes']:
+                password = getpass.getpass("暗号化用パスワードを設定してください: ")
+                confirm_password = getpass.getpass("パスワードを再入力してください: ")
+                
+                if password == confirm_password:
+                    if self.api_manager.save_api_key("openai", api_key, password):
+                        print("💾 次回から同じパスワードで自動読み込み可能です")
+                else:
+                    print("⚠️ パスワードが一致しませんでした。今回のみ使用します")
+        elif save_option:
+            print("\n⚠️ 暗号化保存機能を使用するには 'pip install cryptography' が必要です")
+        
+        return api_key
+    
     def call_ai_cli(self, github_url, repo_name, ai_config):
         """AI CLIを呼び出してユースケース分析を実行"""
         
         ai_provider = ai_config.get('provider', 'gemini')
         precision = ai_config.get('precision', 'high')
+        openai_api_key = ai_config.get('openai_api_key')
         
         providers = ["claude", "gemini"] if ai_provider == "auto" else [ai_provider]
         
@@ -933,7 +1145,7 @@ class UseCaseGenerator:
                     
                     # 一時ディレクトリを作成
                     with tempfile.TemporaryDirectory(prefix=f"{provider}_analysis_") as temp_dir:
-                        analyzer = MultiStageAnalyzer(github_url, repo_name, temp_dir, self.cli_outputs_dir, provider)
+                        analyzer = MultiStageAnalyzer(github_url, repo_name, temp_dir, self.cli_outputs_dir, provider, openai_api_key)
                         result = analyzer.execute_full_analysis()
                         
                         if result:
@@ -1009,18 +1221,27 @@ CLIの生ログや分析プロセスは含めず、簡潔で読みやすい最�
                     if provider == "gemini":
                         cmd = ["gemini", "chat", "--prompt", prompt]
                         timeout = 120  # 2分
+                        result = subprocess.run(
+                            cmd, 
+                            capture_output=True, 
+                            text=True, 
+                            timeout=timeout
+                        )
                     elif provider == "claude":
                         cmd = ["claude", prompt]
                         timeout = 120  # 2分
+                        result = subprocess.run(
+                            cmd, 
+                            capture_output=True, 
+                            text=True, 
+                            timeout=timeout
+                        )
+                    elif provider == "chatgpt":
+                        # ChatGPT API呼び出し用のアナライザーを作成
+                        temp_analyzer = MultiStageAnalyzer(github_url, repo_name, "/tmp", self.cli_outputs_dir, provider, openai_api_key)
+                        result = temp_analyzer._call_chatgpt_api(prompt)
                     else:
                         continue
-                    
-                    result = subprocess.run(
-                        cmd, 
-                        capture_output=True, 
-                        text=True, 
-                        timeout=timeout
-                    )
                     
                     # プログレス停止
                     stop_progress.set()
@@ -1206,8 +1427,10 @@ def main():
     parser = argparse.ArgumentParser(description='GitHubリポジトリからAIユースケースを自動生成')
     parser.add_argument('github_url', nargs='?', help='GitHubリポジトリURL')
     parser.add_argument('--project-root', default='.', help='プロジェクトルートディレクトリ')
-    parser.add_argument('--ai-provider', choices=['gemini', 'claude', 'auto'], default='claude', 
+    parser.add_argument('--ai-provider', choices=['gemini', 'claude', 'chatgpt', 'auto'], default='claude', 
                        help='使用するAI CLI (default: claude)')
+    parser.add_argument('--openai-api-key', 
+                       help='ChatGPT用OpenAI APIキー（省略時は対話式入力）')
     parser.add_argument('--precision', choices=['fast', 'high'], default='high',
                        help='分析精度モード (default: high)')
     parser.add_argument('--no-git', action='store_true', 
@@ -1256,19 +1479,28 @@ def main():
         print("2. Gemini 高速（単発分析・1-3分）")
         print("3. Claude 高精度（多段階分析・10-15分）⭐ 推奨")
         print("4. Claude 高速（単発分析・1-3分）")
-        print("5. 自動選択（高精度）")
+        print("5. ChatGPT 高精度（多段階分析・10-15分）🔑 APIキー必要")
+        print("6. ChatGPT 高速（単発分析・1-3分）🔑 APIキー必要")
+        print("7. 自動選択（高精度）")
         
-        choice = input("選択してください [1-5, default: 3]: ").strip()
+        choice = input("選択してください [1-7, default: 3]: ").strip()
         
         ai_config_map = {
             "1": {"provider": "gemini", "precision": "high"},
             "2": {"provider": "gemini", "precision": "fast"},
             "3": {"provider": "claude", "precision": "high"},
             "4": {"provider": "claude", "precision": "fast"},
-            "5": {"provider": "auto", "precision": "high"},
+            "5": {"provider": "chatgpt", "precision": "high"},
+            "6": {"provider": "chatgpt", "precision": "fast"},
+            "7": {"provider": "auto", "precision": "high"},
             "": {"provider": "claude", "precision": "high"}
         }
         ai_config = ai_config_map.get(choice, {"provider": "claude", "precision": "high"})
+        
+        # ChatGPTが選択された場合、APIキーを取得
+        if ai_config["provider"] == "chatgpt":
+            api_key = generator.get_chatgpt_api_key()
+            ai_config["openai_api_key"] = api_key
         
         # Git操作選択
         git_choice = input("\nGit操作を自動実行しますか？ [Y/n]: ").strip().lower()
@@ -1277,6 +1509,15 @@ def main():
         github_url = args.github_url
         ai_config = {"provider": args.ai_provider, "precision": args.precision}
         auto_git = not args.no_git
+        
+        # ChatGPTが指定された場合、APIキーを処理
+        if args.ai_provider == "chatgpt":
+            if args.openai_api_key:
+                ai_config["openai_api_key"] = args.openai_api_key
+            else:
+                generator = UseCaseGenerator(args.project_root)
+                api_key = generator.get_chatgpt_api_key()
+                ai_config["openai_api_key"] = api_key
         
         # コマンドライン引数の場合もURL検証を実行
         generator = UseCaseGenerator(args.project_root)

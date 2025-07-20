@@ -38,6 +38,47 @@ AIのユースケースを体系的に管理するためのObsidianデータベ�
 
 - `AIユースケーステンプレート.md` - 基本的なユースケース記録用テンプレート
 
+## 自動生成ツール
+
+このプロジェクトには、GitHubリポジトリからAIユースケースを自動生成するPythonスクリプトが含まれています。
+
+### 対応AI
+
+1. **Claude CLI** - 推奨（無料、高精度）
+2. **Gemini CLI** - 高速（無料、但しクォータ制限有）
+3. **ChatGPT API** - 安定（APIキー必要、有料）
+
+### セットアップ
+
+```bash
+# 依存関係のインストール
+pip install -r requirements.txt
+
+# AI CLIツールのインストール（お好みで）
+# Claude CLI: https://github.com/anthropics/claude-code
+# Gemini CLI: npm install -g @google/generative-ai-cli
+# ChatGPT: OpenAI APIキーのみ必要
+```
+
+### 使い方
+
+```bash
+# インタラクティブモード
+python scripts/auto_usecase_generator.py
+
+# コマンドライン引数
+python scripts/auto_usecase_generator.py https://github.com/user/repo
+
+# ChatGPT使用（APIキー暗号化保存可能）
+python scripts/auto_usecase_generator.py --ai-provider chatgpt
+```
+
+### セキュリティ
+
+- ChatGPT APIキーは暗号化して安全に保存
+- `.config/`フォルダは.gitignoreで除外済み
+- APIキーがGitHubに公開される心配なし
+
 ## DB Folderの活用
 
 - **フォルダベース**: `use-cases/`フォルダ内のファイルを自動的にデータベース化

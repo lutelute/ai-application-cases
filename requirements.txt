@@ -1,0 +1,13 @@
+# Core dependencies
+requests>=2.31.0
+
+# Encryption for API keys
+cryptography>=41.0.0
+
+# Optional: For better JSON handling
+# jsonschema>=4.19.0
+
+# Note: AI CLI tools need to be installed separately:
+# - Claude CLI: https://github.com/anthropics/claude-code  
+# - Gemini CLI: npm install -g @google/generative-ai-cli
+# - ChatGPT uses OpenAI API (no CLI installation needed)
