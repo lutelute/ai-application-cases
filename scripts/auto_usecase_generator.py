@@ -217,7 +217,12 @@ class MultiStageAnalyzer:
                 return extract_clean_output(result.stdout)
             else:
                 progress.finish(f"{stage_name} 失敗")
-                print(f"❌ エラー: {result.stderr}")
+                # クォータエラーかどうかチェック
+                if "Quota exceeded" in result.stderr or "429" in result.stderr:
+                    print(f"⚠️ {self.ai_provider.upper()} APIクォータ制限に達しました")
+                    print(f"💡 別のAIプロバイダーを試すか、時間をおいて再実行してください")
+                else:
+                    print(f"❌ エラー: {result.stderr}")
                 return None
                 
         except subprocess.TimeoutExpired:
@@ -914,7 +919,7 @@ class UseCaseGenerator:
         ai_provider = ai_config.get('provider', 'gemini')
         precision = ai_config.get('precision', 'high')
         
-        providers = ["gemini", "claude"] if ai_provider == "auto" else [ai_provider]
+        providers = ["claude", "gemini"] if ai_provider == "auto" else [ai_provider]
         
         for provider in providers:
             try:
@@ -1201,8 +1206,8 @@ def main():
     parser = argparse.ArgumentParser(description='GitHubリポジトリからAIユースケースを自動生成')
     parser.add_argument('github_url', nargs='?', help='GitHubリポジトリURL')
     parser.add_argument('--project-root', default='.', help='プロジェクトルートディレクトリ')
-    parser.add_argument('--ai-provider', choices=['gemini', 'claude', 'auto'], default='gemini', 
-                       help='使用するAI CLI (default: gemini)')
+    parser.add_argument('--ai-provider', choices=['gemini', 'claude', 'auto'], default='claude', 
+                       help='使用するAI CLI (default: claude)')
     parser.add_argument('--precision', choices=['fast', 'high'], default='high',
                        help='分析精度モード (default: high)')
     parser.add_argument('--no-git', action='store_true', 
@@ -1249,11 +1254,11 @@ def main():
         print("\n🤖 AI分析オプション選択:")
         print("1. Gemini 高精度（多段階分析・10-15分）")
         print("2. Gemini 高速（単発分析・1-3分）")
-        print("3. Claude 高精度（多段階分析・10-15分）")
+        print("3. Claude 高精度（多段階分析・10-15分）⭐ 推奨")
         print("4. Claude 高速（単発分析・1-3分）")
         print("5. 自動選択（高精度）")
         
-        choice = input("選択してください [1-5, default: 1]: ").strip()
+        choice = input("選択してください [1-5, default: 3]: ").strip()
         
         ai_config_map = {
             "1": {"provider": "gemini", "precision": "high"},
@@ -1261,9 +1266,9 @@ def main():
             "3": {"provider": "claude", "precision": "high"},
             "4": {"provider": "claude", "precision": "fast"},
             "5": {"provider": "auto", "precision": "high"},
-            "": {"provider": "gemini", "precision": "high"}
+            "": {"provider": "claude", "precision": "high"}
         }
-        ai_config = ai_config_map.get(choice, {"provider": "gemini", "precision": "high"})
+        ai_config = ai_config_map.get(choice, {"provider": "claude", "precision": "high"})
         
         # Git操作選択
         git_choice = input("\nGit操作を自動実行しますか？ [Y/n]: ").strip().lower()
